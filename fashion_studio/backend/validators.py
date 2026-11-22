@@ -31,12 +31,51 @@ def validate_phone(phone: Any) -> str:
     if not isinstance(phone, str):
         raise ValidationError("Phone number must be a string.")
     cleaned = phone.strip()
-    if any(character.isalpha() for character in cleaned):
+    if not cleaned:
         raise ValidationError("Phone number must contain digits and valid phone punctuation only.")
+    if any(character not in "0123456789- . " for character in cleaned):
+        raise ValidationError("Phone number must contain digits and valid phone punctuation only.")
+    if cleaned[0] in "- ." or cleaned[-1] in "- .":
+        raise ValidationError("Phone number has invalid formatting.")
+    for separator in ("--", "..", "  "):
+        if separator in cleaned:
+            raise ValidationError("Phone number has invalid formatting.")
+    if any(
+        cleaned[index] in "- . " and cleaned[index + 1] in "- . "
+        for index in range(len(cleaned) - 1)
+    ):
+        raise ValidationError("Phone number has invalid formatting.")
     digits = "".join(character for character in cleaned if character.isdigit())
     if not 7 <= len(digits) <= 15:
         raise ValidationError("Phone number must contain between 7 and 15 digits.")
     return cleaned
+
+
+def normalize_phone(phone: Any) -> str:
+    """Normalize accepted phone display formats for uniqueness comparison.
+
+    Comparison removes formatting punctuation and keeps only digits. It does not
+    add a country code or otherwise change the user's number.
+    """
+    cleaned = validate_phone(phone)
+    return "".join(character for character in cleaned if character.isdigit())
+
+
+def validate_complete_iso_datetime(value: Any, field_name: str = "Timestamp") -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValidationError(field_name + " must be a valid complete ISO 8601 datetime.")
+    timestamp = value.strip()
+    if " " in timestamp:
+        raise ValidationError(field_name + " must be a valid complete ISO 8601 datetime.")
+    if "T" not in timestamp:
+        raise ValidationError(field_name + " must be a valid complete ISO 8601 datetime.")
+    try:
+        parsed = datetime.fromisoformat(timestamp[:-1] + "+00:00" if timestamp.endswith("Z") else timestamp)
+    except ValueError:
+        raise ValidationError(field_name + " must be a valid complete ISO 8601 datetime.") from None
+    if parsed.isoformat().split("T", 1)[0] != timestamp.split("T", 1)[0]:
+        raise ValidationError(field_name + " must be a valid complete ISO 8601 datetime.")
+    return timestamp
 
 
 def validate_email(email: Optional[str]) -> Optional[str]:
@@ -45,9 +84,25 @@ def validate_email(email: Optional[str]) -> Optional[str]:
     if not isinstance(email, str):
         raise ValidationError("Email must be a string or null.")
     email = email.strip()
-    if email and ("@" not in email or "." not in email.rsplit("@", 1)[-1]):
+    if not email:
+        return None
+    if any(character.isspace() for character in email):
         raise ValidationError("Email address is invalid.")
-    return email or None
+    if email.count("@") != 1:
+        raise ValidationError("Email address is invalid.")
+    local, domain = email.rsplit("@", 1)
+    if not local or not domain or local.startswith(".") or local.endswith(".") or ".." in local:
+        raise ValidationError("Email address is invalid.")
+    if domain.startswith(".") or domain.endswith(".") or ".." in domain:
+        raise ValidationError("Email address is invalid.")
+    labels = domain.split(".")
+    if len(labels) < 2 or any(not label for label in labels):
+        raise ValidationError("Email address is invalid.")
+    if any(not all(character.isalnum() or character == "-" for character in label) for label in labels):
+        raise ValidationError("Email address is invalid.")
+    if any(label.startswith("-") or label.endswith("-") for label in labels):
+        raise ValidationError("Email address is invalid.")
+    return email
 
 
 def validate_measurements(measurements: Optional[Mapping[str, Any]]) -> dict[str, float]:

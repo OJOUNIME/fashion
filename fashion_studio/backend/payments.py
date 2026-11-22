@@ -16,6 +16,7 @@ from .storage import (
     append_record,
     load_data,
     read_next_id,
+    record_lock,
     save_next_id,
 )
 from .validators import (
@@ -66,52 +67,53 @@ def record_payment(
         notes = notes.strip() or None
 
     order_path = ORDERS_FILE if orders_file is None else orders_file
-    from .orders import get_order_by_id
-    order = get_order_by_id(order_id, order_path)
-    if order.get("status") == "cancelled":
-        raise InvalidStatusTransitionError(
-            "Payments cannot be recorded for a cancelled order."
-        )
-
     payment_path = _resolve_payments_file(payments_file)
-    outstanding = calculate_outstanding_balance(order_id, order_path, payment_path)
-    if outstanding < Decimal("0.00"):
-        outstanding = Decimal("0.00")
-    amount_decimal = Decimal(amount_string)
-    if amount_decimal > outstanding:
-        raise InsufficientBalanceError(
-            "Payment amount " + amount_string
-            + " exceeds the outstanding balance " + format(outstanding, ".2f")
-            + "."
-        )
+    from .orders import get_order_by_id
+    with record_lock(order_path):
+        order = get_order_by_id(order_id, order_path)
+        if order.get("status") == "cancelled":
+            raise InvalidStatusTransitionError(
+                "Payments cannot be recorded for a cancelled order."
+            )
 
-    if payment_date is None:
-        payment_date_value = _timestamp()
-    else:
-        if isinstance(payment_date, datetime):
-            payment_date_value = payment_date.isoformat()
-        elif isinstance(payment_date, str):
-            try:
-                datetime.fromisoformat(payment_date.replace("Z", "+00:00"))
-            except ValueError:
-                raise ValidationError("Payment date must be an ISO-8601 timestamp.") from None
-            payment_date_value = payment_date
+        outstanding = calculate_outstanding_balance(order_id, order_path, payment_path)
+        if outstanding < Decimal("0.00"):
+            outstanding = Decimal("0.00")
+        amount_decimal = Decimal(amount_string)
+        if amount_decimal > outstanding:
+            raise InsufficientBalanceError(
+                "Payment amount " + amount_string
+                + " exceeds the outstanding balance " + format(outstanding, ".2f")
+                + "."
+            )
+
+        if payment_date is None:
+            payment_date_value = _timestamp()
         else:
-            raise ValidationError("Payment date must be an ISO-8601 timestamp.")
+            if isinstance(payment_date, datetime):
+                payment_date_value = payment_date.isoformat()
+            elif isinstance(payment_date, str):
+                try:
+                    datetime.fromisoformat(payment_date.replace("Z", "+00:00"))
+                except ValueError:
+                    raise ValidationError("Payment date must be an ISO-8601 timestamp.") from None
+                payment_date_value = payment_date
+            else:
+                raise ValidationError("Payment date must be an ISO-8601 timestamp.")
 
-    payment_id = generate_payment_id(payment_path)
-    record = {
-        "payment_id": payment_id,
-        "order_id": order_id,
-        "amount": amount_string,
-        "payment_method": payment_method,
-        "payment_date": payment_date_value,
-        "reference": reference,
-        "notes": notes,
-    }
-    append_record(record, payment_path)
-    save_next_id("payment", payment_id + 1, payment_path)
-    return record
+        payment_id = generate_payment_id(payment_path)
+        record = {
+            "payment_id": payment_id,
+            "order_id": order_id,
+            "amount": amount_string,
+            "payment_method": payment_method,
+            "payment_date": payment_date_value,
+            "reference": reference,
+            "notes": notes,
+        }
+        append_record(record, payment_path)
+        save_next_id("payment", payment_id + 1, payment_path)
+        return record
 
 
 def get_payment_by_id(payment_id: int, payments_file: Optional[Any] = None) -> dict[str, Any]:
@@ -150,9 +152,11 @@ def calculate_outstanding_balance(
 ) -> Decimal:
     from .orders import get_order_by_id
     order = get_order_by_id(order_id, orders_file)
+    if order.get("status") == "cancelled":
+        return Decimal("0.00")
     total = Decimal(order["total_amount"])
     paid = calculate_total_paid(order_id, payments_file)
-    return (total - paid).quantize(Decimal("0.01"))
+    return max(Decimal("0.00"), (total - paid).quantize(Decimal("0.01")))
 
 
 def get_payment_status(
@@ -161,7 +165,9 @@ def get_payment_status(
     payments_file: Optional[Any] = None,
 ) -> str:
     from .orders import get_order_by_id
-    get_order_by_id(order_id, orders_file)
+    order = get_order_by_id(order_id, orders_file)
+    if order.get("status") == "cancelled":
+        return "cancelled"
     paid = calculate_total_paid(order_id, payments_file)
     if paid == 0:
         return "unpaid"

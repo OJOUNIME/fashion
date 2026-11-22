@@ -14,6 +14,10 @@ from fashion_studio.backend.reporting import (
     get_business_report,
 )
 from fashion_studio.backend.orders import cancel_order
+from fashion_studio.backend.payments import (
+    calculate_outstanding_balance,
+    get_payment_status,
+)
 
 
 class ReportingTests(unittest.TestCase):
@@ -72,6 +76,12 @@ class ReportingTests(unittest.TestCase):
         )
         self.assertEqual(report["total_sales_value"], "0.00")
         self.assertEqual(report["total_outstanding_balances"], "0.00")
+        self.assertEqual(str(calculate_outstanding_balance(
+            self.order["order_id"], self.order_file, self.payment_file,
+        )), "0.00")
+        self.assertEqual(get_payment_status(
+            self.order["order_id"], self.order_file, self.payment_file,
+        ), "cancelled")
 
 
 if __name__ == "__main__":

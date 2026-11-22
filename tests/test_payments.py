@@ -19,6 +19,7 @@ from fashion_studio.backend.exceptions import (
     PaymentNotFoundError,
 )
 from fashion_studio.backend.orders import cancel_order
+from fashion_studio.backend.orders import update_order
 from fashion_studio.backend.payments import get_all_payments, get_payment_by_id
 from fashion_studio.backend.exceptions import ValidationError
 
@@ -110,6 +111,88 @@ class PaymentTests(unittest.TestCase):
     def test_payment_status_rejects_nonexistent_order(self):
         with self.assertRaises(OrderNotFoundError):
             get_payment_status(999, self.order_file, self.payment_file)
+
+    def test_cancelled_orders_have_zero_outstanding_and_cancelled_status(self):
+        cancelled_unpaid = cancel_order(self.order["order_id"], self.order_file)
+        self.assertEqual(cancelled_unpaid["status"], "cancelled")
+        self.assertEqual(str(calculate_outstanding_balance(
+            self.order["order_id"], self.order_file, self.payment_file,
+        )), "0.00")
+        self.assertEqual(get_payment_status(
+            self.order["order_id"], self.order_file, self.payment_file,
+        ), "cancelled")
+
+    def test_cancelled_partially_and_fully_paid_orders_keep_payments(self):
+        partial_order = create_order(
+            1, "Dress", "Dress", 1, "10000.00", "2026-12-01",
+            orders_file=Path(self.temp_dir.name) / "partial_orders.json",
+            customers_file=self.customer_file,
+        )
+        partial_orders = Path(self.temp_dir.name) / "partial_orders.json"
+        partial_payments = Path(self.temp_dir.name) / "partial_payments.json"
+        record_payment(
+            partial_order["order_id"], "3000.00", "cash",
+            payments_file=partial_payments, orders_file=partial_orders,
+        )
+        cancel_order(partial_order["order_id"], partial_orders)
+        self.assertEqual(str(calculate_total_paid(
+            partial_order["order_id"], partial_payments,
+        )), "3000.00")
+        self.assertEqual(str(calculate_outstanding_balance(
+            partial_order["order_id"], partial_orders, partial_payments,
+        )), "0.00")
+        self.assertEqual(get_payment_status(
+            partial_order["order_id"], partial_orders, partial_payments,
+        ), "cancelled")
+
+        fully_order = create_order(
+            1, "Suit", "Suit", 1, "5000.00", "2026-12-01",
+            orders_file=Path(self.temp_dir.name) / "fully_orders.json",
+            customers_file=self.customer_file,
+        )
+        fully_orders = Path(self.temp_dir.name) / "fully_orders.json"
+        fully_payments = Path(self.temp_dir.name) / "fully_payments.json"
+        record_payment(
+            fully_order["order_id"], "5000.00", "card",
+            payments_file=fully_payments, orders_file=fully_orders,
+        )
+        cancel_order(fully_order["order_id"], fully_orders)
+        self.assertEqual(str(calculate_total_paid(
+            fully_order["order_id"], fully_payments,
+        )), "5000.00")
+        self.assertEqual(str(calculate_outstanding_balance(
+            fully_order["order_id"], fully_orders, fully_payments,
+        )), "0.00")
+
+    def test_paid_order_cannot_decrease_below_paid_amount(self):
+        record_payment(
+            self.order["order_id"], "3000.00", "cash",
+            payments_file=self.payment_file, orders_file=self.order_file,
+        )
+        with self.assertRaises(ValidationError):
+            update_order(
+                self.order["order_id"], quantity=0, orders_file=self.order_file,
+                payments_file=self.payment_file,
+            )
+        with self.assertRaises(ValidationError):
+            update_order(
+                self.order["order_id"], unit_price="2000.00",
+                orders_file=self.order_file, payments_file=self.payment_file,
+            )
+
+    def test_valid_order_increase_after_partial_payment(self):
+        record_payment(
+            self.order["order_id"], "3000.00", "cash",
+            payments_file=self.payment_file, orders_file=self.order_file,
+        )
+        updated = update_order(
+            self.order["order_id"], quantity=2,
+            orders_file=self.order_file, payments_file=self.payment_file,
+        )
+        self.assertEqual(updated["total_amount"], "20000.00")
+        self.assertEqual(str(calculate_outstanding_balance(
+            self.order["order_id"], self.order_file, self.payment_file,
+        )), "17000.00")
 
 
 if __name__ == "__main__":

@@ -175,24 +175,43 @@ def save_next_id(entity: str, next_id: int, file_path: Optional[Any] = None) -> 
 def record_lock(file_path: Any):
     """Best-effort advisory lock for cooperating processes on one JSON file."""
     path = resolve_path(file_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    lock_path = path.with_name(path.name + ".lock")
-    with lock_path.open("a+", encoding="utf-8") as handle:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = path.with_name(path.name + ".lock")
+        handle = lock_path.open("a+", encoding="utf-8")
+    except OSError as exc:
+        raise DataStorageError(
+            "Could not open the lock file for " + str(path) + ": " + str(exc)
+        ) from exc
+
+    acquired = False
+    try:
         try:
             import fcntl
-
+        except ImportError as exc:
+            raise DataStorageError(
+                "Advisory file locking is unavailable on this platform."
+            ) from exc
+        try:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-        except (ImportError, OSError):
-            pass
+            acquired = True
+        except (AttributeError, OSError) as exc:
+            raise DataStorageError(
+                "Could not acquire the lock for " + str(path) + ": " + str(exc)
+            ) from exc
+
         try:
             yield
         finally:
-            try:
-                import fcntl
-
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-            except (ImportError, OSError):
-                pass
+            if acquired:
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                except (AttributeError, OSError) as exc:
+                    raise DataStorageError(
+                        "Could not release the lock for " + str(path) + ": " + str(exc)
+                    ) from exc
+    finally:
+        handle.close()
 
 
 def create_backup(file_path: Optional[Any] = None) -> Path:
@@ -243,6 +262,72 @@ def validate_integrity(
             issues.append("Malformed or missing " + field_name + " ID.")
         if len(values) != len(set(values)):
             issues.append("Duplicate " + field_name + " IDs.")
+
+    from .validators import (
+        ValidationError,
+        normalize_phone,
+        validate_customer_name,
+        validate_complete_iso_datetime,
+        validate_email,
+        validate_measurements,
+        validate_phone,
+    )
+
+    customer_phones: set[str] = set()
+    for index, customer in enumerate(customers):
+        label = "Customer " + str(customer.get("id", index + 1))
+        required_fields = (
+            "id", "name", "phone", "email", "address", "measurements",
+            "active", "created_at", "updated_at",
+        )
+        missing = [field for field in required_fields if field not in customer]
+        if missing:
+            issues.append(label + " is missing required fields: " + ", ".join(missing) + ".")
+
+        try:
+            validate_customer_name(customer.get("name"))
+        except ValidationError:
+            issues.append(label + " has an invalid name.")
+
+        phone = customer.get("phone")
+        try:
+            validated_phone = validate_phone(phone)
+            normalized_phone = normalize_phone(validated_phone)
+            if normalized_phone in customer_phones:
+                issues.append("Duplicate customer phone number: " + validated_phone + ".")
+            customer_phones.add(normalized_phone)
+        except ValidationError:
+            issues.append(label + " has an invalid phone number.")
+
+        try:
+            validate_email(customer.get("email"))
+        except ValidationError:
+            issues.append(label + " has an invalid email.")
+
+        address = customer.get("address")
+        if address is not None and not isinstance(address, str):
+            issues.append(label + " has an invalid address.")
+
+        measurements = customer.get("measurements")
+        if not isinstance(measurements, dict):
+            issues.append(label + " has malformed measurements.")
+        else:
+            try:
+                validate_measurements(measurements)
+            except ValidationError:
+                issues.append(label + " has malformed measurements.")
+
+        if not isinstance(customer.get("active"), bool):
+            issues.append(label + " has an invalid active/deactivated status.")
+        for timestamp_field in ("created_at", "updated_at"):
+            timestamp = customer.get(timestamp_field)
+            if not isinstance(timestamp, str):
+                issues.append(label + " has an invalid " + timestamp_field + " value.")
+            else:
+                try:
+                    validate_complete_iso_datetime(timestamp, timestamp_field)
+                except ValidationError:
+                    issues.append(label + " has an invalid " + timestamp_field + " value.")
 
     valid_customer_ids = {
         value for value in customer_ids

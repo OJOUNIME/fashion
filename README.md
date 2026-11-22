@@ -68,6 +68,14 @@ balance, but remain in customer history. `get_business_report()` reports
 customer activity, order states, sales, payments, balances, and due/overdue
 orders. `get_customer_order_statistics()` provides per-customer order counts.
 
+Customer search matches partial names and phone numbers. An integer or numeric
+text query matches a customer ID exactly; searches do not use partial customer
+IDs.
+
+Phone uniqueness ignores display formatting and compares digits only. For
+example, `08012345678`, `080-1234-5678`, and `080 1234 5678` are the same
+phone number. The original display value is preserved; no country code is added.
+
 ## Integrity and backups
 
 `validate_integrity()` in `storage.py` detects malformed or duplicate IDs,
